@@ -4,108 +4,125 @@
 # The code is in Julia. There is an additional Jupyter notebook that generates
 # the figures used. 
 
+module LongBondsCT 
+
 using Parameters
 using Roots
 using DifferentialEquations
 using Plots 
+using LaTeXStrings
 
 
-@with_kw struct ModelLB{F1, F2} @deftype Float64
+export AbstractUtility, LogUtility, CRRAUtility, AbstractLongBondModel, LongBondModel
+
+export solve_efficient, solve_equilibrium, plot_c, plot_q, plot_v
+
+
+# Utility functions -- type and methods
+
+abstract type AbstractUtility end 
+
+
+struct LogUtility <: AbstractUtility end 
+
+u(::LogUtility, c) = log(c)
+
+inv_u(::LogUtility, x) = exp(x)
+
+u_prime(::LogUtility, c) = 1 / c 
+
+inv_u_prime(::LogUtility, x) = 1 / x
+
+
+struct CRRAUtility <: AbstractUtility 
+    σ :: Float64 
+end 
+
+u(uf::CRRAUtility, c) = c^(1 - uf.σ) / (1 - uf.σ)
+
+inv_u(uf::CRRAUtility, x) = ((1 - uf.σ) * x)^(1 / (1 - uf.σ))
+
+u_prime(uf::CRRAUtility, c) = c^(- uf.σ)
+
+inv_u_prime(uf::CRRAUtility, x) = x^(- 1 / uf.σ) 
+
+
+# Model struct 
+
+abstract type AbstractLongBondModel{T<:AbstractUtility} end 
+
+@with_kw struct LongBondModel{T} <: AbstractLongBondModel{T} @deftype Float64
+    uf::T = LogUtility()
     r = 0.05
     δ = 0.2
     λ = 0.2
     τₗ = 0.05
     τₕ = 0.3
-    y = 1.0
-    u::F1 = log
-    inv_u::F2 = exp
-    
+    y = 1.0    
     ρ = r
-    v̲ = u((1 - τₕ) * y) / r
-    v̅ = u((1 - τₗ) * y) / r
-    b̲ = (y - inv_u(ρ * v̅)) / r
+    v̲ = u(uf, (1 - τₕ) * y) / r
+    v̅ = u(uf, (1 - τₗ) * y) / r
+    b̲ = (y - inv_u(uf, ρ * v̅)) / r
     q̲ = (r + δ) / (r + δ + λ)
-    b̅ = (y - inv_u((ρ + λ)* v̲ - λ * v̅)) / (r + δ * (1 - q̲))
+    b̅ = (y - inv_u(uf, (ρ + λ)* v̲ - λ * v̅)) / (r + δ * (1 - q̲))
 end
 
+# Model methods 
 
-function cFun(p, q, m)
-    @assert typeof(m.u) == typeof(log)
-    return (- q / p)
-end 
+u(m::AbstractLongBondModel, c) = u(m.uf, c)
 
+c_foc(m::AbstractLongBondModel, p, q) = inv_u_prime(m.uf, - p / q) 
 
-function pₛ(q, b, m) 
-    return - (q / (m.y - b * (m.r +m. δ - q * m.δ)))
-end
+pₛₛ(m::AbstractLongBondModel, q, b) = - u_prime(m.uf, cₛₛ(m, q, b)) * q
 
+cₛₛ(m::AbstractLongBondModel, q, b) = m.y - (m.r + m.δ * (1 - q)) * b
 
-function c_stationary(q, b, m)
-    return m.y - (m.r + m.δ * (1 - q)) * b
-end
+b_dot(m::AbstractLongBondModel, c, q, b) = (c + (m.r + m.δ) * b - m.y) / q - m.δ * b
 
 
-function u_stationary(q, b, m) 
-    if b < m.b̲ 
-        return m.u(m.y - (m.r + m.δ * (1 - q)) * b) / m.r
+function u_stationary(m::AbstractLongBondModel, q, b) 
+    if b < m.b̲
+        return u(m, cₛₛ(m, q, b)) / m.r
     else
-        return ((m.u(m.y - (m.r + m.δ * (1 - q)) * b) + m.λ * m.v̅) /
-             (m.r + m.λ))
+        return (u(m, cₛₛ(m, q, b)) + m.λ * m.v̅) / (m.r + m.λ)
     end
 end
 
 
-function bDot(c, q, b, m)
-    return (c + (m.r + m.δ) * b - m.y) / q - m.δ * b
+function hjb(m::AbstractLongBondModel, v, c, p, q, b)
+    return u(m, c) + p * b_dot(m, c, q, b) + m.λ * m.v̅ - (m.ρ + m.λ) * v
 end
 
 
-function hjb(v, c, p, q, b, m)
-    return (
-        m.u(c) + p * bDot(c, q, b, m) + m.λ * m.v̅ - 
-        (m.ρ + m.λ) * v
-    )
-end
-
-
-function v_prime(v, q, b, m)
-    pss = pₛ(q, b, m)
-    if hjb(v, cFun(pss, q, m), pss, q, b, m) >= 0.0 
-        @info "OOOHHHH no! No solution to HJB. Should be stopping at" b
+function v_prime(m::AbstractLongBondModel, v, q, b)
+    pss = pₛₛ(m, q, b)
+    if hjb(m, v, c_foc(m, pss, q), pss, q, b) >= 0.0 
+        @info "OH NO! No solution to HJB. Should be stopping at" b
         # you don't want to be here
         return 0.0
     else
         return find_zero(
-            p -> hjb(v, cFun(p, q, m), p, q, b, m), 
-            (
-                pss - 1000.0, 
-                pss
-            )
+            p -> hjb(m, v, c_foc(m, p, q), p, q, b), (pss - 1000.0, pss)
         )
     end
 end
 
 
-function q_prime(p, q, b, m) 
+function q_prime(m::AbstractLongBondModel, p, q, b) 
     return (
-        ((m.r + m.δ + m.λ) * q - (m.r + m.δ)) / bDot(cFun(p, q, m), q, b, m)
+        ((m.r + m.δ + m.λ) * q - (m.r + m.δ)) / b_dot(m, c_foc(m, p, q), q, b)
     )
 end
 
 
-function ode_system!(du, u, m, t)
-    # u = [ v(b)  q(b) ]
-    # println(
-    #     "b=", t, " [v, q]=", u, ", v - vss=", 
-    #     u[1] - u_stationary(u[2], t)
-    # )
-    du[1] = v_prime(u[1], u[2], t, m)
-    du[2] = q_prime(du[1], u[2], t, m)
+function ode_system!(duu, uu, m::AbstractLongBondModel, t)
+    duu[1] = v_prime(m, uu[1], uu[2], t)
+    duu[2] = q_prime(m, duu[1], uu[2], t)
 end
 
 
 function solve_equilibrium(
-    m::ModelLB; 
+    m::AbstractLongBondModel; 
     extra_grid_pts=20,
     tol_initial_point=10.0^(-6),
     tol_stopping_ODE=10.0^(-9)
@@ -113,9 +130,9 @@ function solve_equilibrium(
     u0 = [m.v̅ + tol_initial_point, 1.0]   # initial condition
     bspan = (m.b̲, Inf) # range for b
 
-    condition = function (u, t, integrator) 
-        pss = pₛ(u[2], t, m)
-        hjb(u[1], cFun(pss, u[2], m), pss, u[2], t, m) >= -tol_stopping_ODE 
+    condition = function (uu, t, integrator) 
+        pss = pₛₛ(m, uu[2], t)
+        hjb(m, uu[1], c_foc(m, pss, uu[2]), pss, uu[2], t) >= -tol_stopping_ODE 
         # stop if you hit the stationary boundary
     end
 
@@ -134,7 +151,7 @@ function solve_equilibrium(
 end
 
 
-function collect_solution(m, out; extra_grid_pts=20)
+function collect_solution(m::AbstractLongBondModel, out; extra_grid_pts=20)
     # Creating the solution 
 
     bbar_i = findlast(
@@ -158,7 +175,7 @@ function collect_solution(m, out; extra_grid_pts=20)
 
     for (i, b) in enumerate(bgrid)
         if b <= m.b̲
-            v[i] = m.u(m.y - m.r * b) / m.ρ 
+            v[i] = u(m, m.y - m.r * b) / m.ρ 
             c[i] = m.y - m.r * b
             q[i] = 1.0
             css[i] = c[i]
@@ -167,13 +184,13 @@ function collect_solution(m, out; extra_grid_pts=20)
             v_and_q = out(b)
             v[i] = v_and_q[1]
             q[i] = v_and_q[2]
-            c[i] = cFun(v_prime(v[i], q[i], b, m), q[i], m)
-            css[i] = c_stationary(q[i], b, m)
-            vss[i] = u_stationary(q[i], b, m)
+            c[i] = c_foc(m, v_prime(m, v[i], q[i], b), q[i])
+            css[i] = cₛₛ(m, q[i], b)
+            vss[i] = u_stationary(m, q[i], b)
         else
-            v[i] = u_stationary(m.q̲, b, m)
+            v[i] = u_stationary(m, m.q̲, b)
             q[i] = m.q̲
-            c[i] = c_stationary(m.q̲, b, m)
+            c[i] = cₛₛ(m, m.q̲, b)
             css[i] = c[i]
             vss[i] = v[i]
         end
@@ -195,15 +212,15 @@ function collect_solution(m, out; extra_grid_pts=20)
 end
 
 
-function solve_efficient(m; extra_grid_pts=20)
+function solve_efficient(m::AbstractLongBondModel; extra_grid_pts=20)
     @unpack y, r, ρ, b̲, b̅, λ, v̅, v̲, q̲, δ = m 
 
     # Computing the exit level of consumption
     # first: solve HJB
     p_exit = find_zero(
         p -> (
-            (r + λ) * v̅ - m.u(cFun(p, 1.0, m)) - p * 
-                (cFun(p, 1.0, m) + (r + λ) * b̲ - y) - λ * v̅
+            (r + λ) * v̅ - u(m, c_foc(m, p, 1.0)) - p * 
+                (c_foc(m, p, 1.0) + (r + λ) * b̲ - y) - λ * v̅
         ),
         (
             -1000.0 - 1. / (y - r * b̲), 
@@ -211,15 +228,16 @@ function solve_efficient(m; extra_grid_pts=20)
         )
     )
     # Then get consumption and bI:
-    c_exit = cFun(p_exit, 1.0, m) 
+    c_exit = c_foc(m, p_exit, 1.0) 
     bI = (y - c_exit) / ((r + λ) * q̲)
 
     # Solving Crisis Zone efficient ODE
-    eff_ode_system! = function(du, u, m, t)
-        du[1] = (((r + λ) * u[1] - m.u(c_exit) - λ * v̅) / 
-            bDot(c_exit, u[2], t, m))
-        du[2] = ((r + δ + λ) * u[2] - (r + δ)) / bDot(c_exit, u[2], t, m)
+    eff_ode_system! = function(duu, uu, m, t)
+        duu[1] = (((r + λ) * uu[1] - u(m, c_exit) - λ * v̅) / 
+            b_dot(m, c_exit, uu[2], t))
+        duu[2] = ((r + δ + λ) * uu[2] - (r + δ)) / b_dot(m, c_exit, uu[2], t)
     end
+    
     bspan = (b̲, bI)
     u0 = [v̅, 1.0] 
     prob = ODEProblem(eff_ode_system!, u0, bspan, m)
@@ -251,7 +269,7 @@ function solve_efficient(m; extra_grid_pts=20)
         if b <= b̲ 
             q[i] = 1.0
             c[i] = y - r * b 
-            v[i] = m.u(y - r * b) / ρ
+            v[i] = u(m, y - r * b) / ρ
             vss[i] = v[i]
             css[i] = c[i]
         elseif b <= bI
@@ -259,12 +277,12 @@ function solve_efficient(m; extra_grid_pts=20)
             v[i] = v_and_q[1]
             q[i] = v_and_q[2]
             c[i] = c_exit 
-            css[i] = c_stationary(q[i], b, m)
-            vss[i] = u_stationary(q[i], b, m)
+            css[i] = cₛₛ(m, q[i], b)
+            vss[i] = u_stationary(m, q[i], b)
         else
             q[i] = q̲
             c[i] = y - (r + λ) * q̲ * b
-            v[i] = (m.u(y - (r + λ) * q̲ * b) + λ * v̅) / (r + λ)
+            v[i] = (u(m, y - (r + λ) * q̲ * b) + λ * v̅) / (r + λ)
             css[i] = c[i]
             vss[i] = v[i]
         end
@@ -286,18 +304,17 @@ function solve_efficient(m; extra_grid_pts=20)
 end
 
 
-function do_c_plot(sol)
+function plot_c(sol)
     f = plot(sol.b, sol.css, line=(1, :dash,), color=2,
         xlabel="b", ylabel="c"); 
     plot!(f, sol.b, sol.c, line=(2), color=1, legend=false)
     plot!(f, size=(300,200))
     vline!(f, [sol.b̲, sol.b̅, sol.bI], line=(1,  :gray))
-
     return f 
 end
 
 
-function do_q_plot(sol)
+function plot_q(sol)
     f = plot(sol.b, sol.q, line=(2), color=1, legend=false, 
         xlabel="b", ylabel="q")
     hline!(f, [sol.m.q̲], line=(1, :dash, :gray))
@@ -307,7 +324,7 @@ function do_q_plot(sol)
 end
 
 
-function do_v_plot(sol)
+function plot_v(sol)
     f = plot(sol.b, sol.vss, line=(2, :dash), color=2,
         xlabel="b", ylabel="v")
     plot!(f, size=(300,200))
@@ -319,3 +336,5 @@ function do_v_plot(sol)
     plot!(f, sol.b, sol.v, line=(2), color=1, legend=false)
     return f 
 end
+
+end 
