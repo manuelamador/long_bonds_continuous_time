@@ -12,7 +12,6 @@ using DifferentialEquations
 using Plots 
 using LaTeXStrings
 
-
 export AbstractUtility, LogUtility, CRRAUtility, AbstractLongBondModel, LongBondModel
 
 export solve_efficient, solve_equilibrium, plot_c, plot_q, plot_v
@@ -54,12 +53,12 @@ abstract type AbstractLongBondModel{T<:AbstractUtility} end
 @with_kw struct LongBondModel{T} <: AbstractLongBondModel{T} @deftype Float64
     uf::T = LogUtility()
     r = 0.05
+    ρ = r
     δ = 0.2
     λ = 0.2
     τₗ = 0.05
     τₕ = 0.3
     y = 1.0    
-    ρ = r
     v̲ = u(uf, (1 - τₕ) * y) / r
     v̅ = u(uf, (1 - τₗ) * y) / r
     b̲ = (y - inv_u(uf, ρ * v̅)) / r
@@ -73,9 +72,9 @@ u(m::AbstractLongBondModel, c) = u(m.uf, c)
 
 c_foc(m::AbstractLongBondModel, p, q) = inv_u_prime(m.uf, - p / q) 
 
-pₛₛ(m::AbstractLongBondModel, q, b) = - u_prime(m.uf, cₛₛ(m, q, b)) * q
-
 cₛₛ(m::AbstractLongBondModel, q, b) = m.y - (m.r + m.δ * (1 - q)) * b
+
+pₛₛ(m::AbstractLongBondModel, q, b) = - u_prime(m.uf, cₛₛ(m, q, b)) * q
 
 b_dot(m::AbstractLongBondModel, c, q, b) = (c + (m.r + m.δ) * b - m.y) / q - m.δ * b
 
@@ -303,6 +302,8 @@ function solve_efficient(m::AbstractLongBondModel; extra_grid_pts=20)
     )    
 end
 
+
+# Plotting functions 
 
 function plot_c(sol)
     f = plot(sol.b, sol.css, line=(1, :dash,), color=2,
