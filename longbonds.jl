@@ -10,7 +10,6 @@ using Parameters
 using Roots
 using DifferentialEquations
 using Plots 
-using LaTeXStrings
 
 export AbstractUtility, LogUtility, CRRAUtility, AbstractLongBondModel, LongBondModel
 
@@ -21,7 +20,10 @@ export solve_efficient, solve_equilibrium, plot_c, plot_q, plot_v
 
 abstract type AbstractUtility end 
 
+# A concrete type of AbstractUtility must define four methods: 
+#   utility, inverse utiliy, the first derivative of u and its inverse. 
 
+# The log utility type
 struct LogUtility <: AbstractUtility end 
 
 u(::LogUtility, c) = log(c)
@@ -33,6 +35,7 @@ u_prime(::LogUtility, c) = 1 / c
 inv_u_prime(::LogUtility, x) = 1 / x
 
 
+# The CRRA type 
 struct CRRAUtility{T<:Real} <: AbstractUtility 
     σ::T 
 end 
@@ -46,10 +49,12 @@ u_prime(uf::CRRAUtility, c) = c^(- uf.σ)
 inv_u_prime(uf::CRRAUtility, x) = x^(- 1 / uf.σ) 
 
 
-# Model struct 
-
+# Model structs 
 abstract type AbstractLongBondModel{T<:AbstractUtility} end 
 
+# Definining the main model struct that contains the parameters 
+# and performs some basic computations.
+# It takes as an input a concrete instance of AbstractUtility 
 @with_kw struct LongBondModel{T, S<:Real} <: AbstractLongBondModel{T} @deftype S
     uf::T = LogUtility()
     r = 0.05
@@ -66,8 +71,13 @@ abstract type AbstractLongBondModel{T<:AbstractUtility} end
     b̅ = (y - inv_u(uf, (ρ + λ)* v̲ - λ * v̅)) / (r + δ * (1 - q̲))
 end
 
-# This will stack-overflow if type promotion fails 
+# The following allows to pass any parameter as say a BigFloat
+# and all of the  other parameters will be promoted to BigFloats, 
+# allowing for arbitrary precision computations.
+#
+# WARNING: This will stack-overflow if type promotion fails 
 LongBondModel(uf, vargs...) = LongBondModel(uf, promote(vargs...)...) 
+
 
 # Model methods 
 
