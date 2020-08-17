@@ -108,9 +108,10 @@ end
 
 function v_prime(m::AbstractLongBondModel, v, q, b)
     pss = pₛₛ(m, q, b)
-    if hjb(m, v, c_foc(m, pss, q), pss, q, b) >= 0.0 
+    cero = zero(v)
+    if hjb(m, v, c_foc(m, pss, q), pss, q, b) >= cero 
         @info "OH NO! No solution to HJB. Should be stopping at" b
-        return 0.0
+        return cero
     else
         return find_zero(
             p -> hjb(m, v, c_foc(m, p, q), p, q, b), (pss - 1000.0, pss)
@@ -135,15 +136,16 @@ end
 function solve_equilibrium(
     m::AbstractLongBondModel; 
     extra_grid_pts=20,
-    tol_initial_point=10.0^(-6),
-    tol_stopping_ODE=10.0^(-9)
+    bv_tol=10.0^(-6),
+    stop_tol=10.0^(-9),
+    ode_tol=()
 )
-    u0 = [m.v̅ + tol_initial_point, 1.0]   # initial condition
+    u0 = [m.v̅ + bv_tol, 1.0]   # initial condition
     bspan = (m.b̲, Inf) # range for b
 
     condition = function (uu, t, integrator) 
         pss = pₛₛ(m, uu[2], t)
-        hjb(m, uu[1], c_foc(m, pss, uu[2]), pss, uu[2], t) >= -tol_stopping_ODE 
+        hjb(m, uu[1], c_foc(m, pss, uu[2]), pss, uu[2], t) >= -stop_tol 
         # stop if you hit the stationary boundary
     end
 
@@ -154,9 +156,9 @@ function solve_equilibrium(
     # Solving the crisis zone
     out = solve(
         prob, 
-        Rosenbrock32(autodiff=false), 
-        reltol=1e-6,
-        callback=cb
+        Rosenbrock32(autodiff=false),
+        callback=cb;
+        ode_tol...
     )
     return collect_solution(m, out, extra_grid_pts=extra_grid_pts)
 end
@@ -223,40 +225,44 @@ function collect_solution(m::AbstractLongBondModel, out; extra_grid_pts=20)
 end
 
 
-function solve_efficient(m::AbstractLongBondModel; extra_grid_pts=20)
+function solve_efficient(m::AbstractLongBondModel; 
+    extra_grid_pts=20, 
+    bI_tol=10^(-10),
+    ode_tol=()    
+)
     @unpack y, r, ρ, b̲, b̅, λ, v̅, v̲, q̲, δ = m 
 
     # Computing the exit level of consumption
     # first: solve HJB
+    uno = one(y)
+
     p_exit = find_zero(
         p -> (
-            (r + λ) * v̅ - u(m, c_foc(m, p, 1.0)) - p * 
-                (c_foc(m, p, 1.0) + (r + λ) * b̲ - y) - λ * v̅
+            (r + λ) * v̅ - u(m, c_foc(m, p, uno)) - p * 
+                (c_foc(m, p, uno) + (r + λ) * b̲ - y) - λ * v̅
         ),
         (
-            -1000.0 - 1. / (y - r * b̲), 
-            - 1. / (y - r * b̲)
+            - uno / (y - r * b̲) - 1000 * uno, 
+            - uno / (y - r * b̲)
         )
     )
+
     # Then get consumption and bI:
-    c_exit = c_foc(m, p_exit, 1.0) 
-    bI = (y - c_exit) / ((r + λ) * q̲)
+    c_exit = c_foc(m, p_exit, uno) 
+    bI = (y - c_exit) / ((r + λ) * q̲) - bI_tol
 
     # Solving Crisis Zone efficient ODE
     eff_ode_system! = function(duu, uu, m, t)
+        bdot = b_dot(m, c_exit, uu[2], t)
         duu[1] = (((r + λ) * uu[1] - u(m, c_exit) - λ * v̅) / 
-            b_dot(m, c_exit, uu[2], t))
-        duu[2] = ((r + δ + λ) * uu[2] - (r + δ)) / b_dot(m, c_exit, uu[2], t)
+            bdot)
+        duu[2] = ((r + δ + λ) * uu[2] - (r + δ)) / bdot
     end
     
     bspan = (b̲, bI)
-    u0 = [v̅, 1.0] 
+    u0 = [v̅, uno] 
     prob = ODEProblem(eff_ode_system!, u0, bspan, m)
-    out = solve(
-        prob, 
-        Rosenbrock32(autodiff=false), 
-        reltol=1e-6
-    )
+    out = solve(prob, Rosenbrock32(autodiff=false); ode_tol...)
 
     # Adjust grid for bgrid to be consistent with maximum outside option
     bbar_i = findlast(
