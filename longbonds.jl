@@ -33,8 +33,8 @@ u_prime(::LogUtility, c) = 1 / c
 inv_u_prime(::LogUtility, x) = 1 / x
 
 
-struct CRRAUtility <: AbstractUtility 
-    σ :: Float64 
+struct CRRAUtility{T<:Real} <: AbstractUtility 
+    σ::T 
 end 
 
 u(uf::CRRAUtility, c) = c^(1 - uf.σ) / (1 - uf.σ)
@@ -50,7 +50,7 @@ inv_u_prime(uf::CRRAUtility, x) = x^(- 1 / uf.σ)
 
 abstract type AbstractLongBondModel{T<:AbstractUtility} end 
 
-@with_kw struct LongBondModel{T} <: AbstractLongBondModel{T} @deftype Float64
+@with_kw struct LongBondModel{T, S<:Real} <: AbstractLongBondModel{T} @deftype S
     uf::T = LogUtility()
     r = 0.05
     ρ = r
@@ -59,12 +59,15 @@ abstract type AbstractLongBondModel{T<:AbstractUtility} end
     τₗ = 0.05
     τₕ = 0.3
     y = 1.0    
+    q̲ = (r + δ) / (r + δ + λ)
     v̲ = u(uf, (1 - τₕ) * y) / r
     v̅ = u(uf, (1 - τₗ) * y) / r
     b̲ = (y - inv_u(uf, ρ * v̅)) / r
-    q̲ = (r + δ) / (r + δ + λ)
     b̅ = (y - inv_u(uf, (ρ + λ)* v̲ - λ * v̅)) / (r + δ * (1 - q̲))
 end
+
+# This will stack-overflow if type promotion fails 
+LongBondModel(uf, vargs...) = LongBondModel(uf, promote(vargs...)...) 
 
 # Model methods 
 
@@ -97,7 +100,6 @@ function v_prime(m::AbstractLongBondModel, v, q, b)
     pss = pₛₛ(m, q, b)
     if hjb(m, v, c_foc(m, pss, q), pss, q, b) >= 0.0 
         @info "OH NO! No solution to HJB. Should be stopping at" b
-        # you don't want to be here
         return 0.0
     else
         return find_zero(
