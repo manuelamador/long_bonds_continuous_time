@@ -11,19 +11,21 @@ using Roots
 using DifferentialEquations
 using Plots 
 
-export AbstractUtility, LogUtility, CRRAUtility, AbstractLongBondModel, LongBondModel
+export AbstractUtility, LogUtility, CRRAUtility, LongBondModel
 
 export solve_efficient, solve_equilibrium, plot_c, plot_q, plot_v
 
 
-# Utility functions -- type and methods
+# ----------------  Utility functions 
+
+# types and methods
 
 abstract type AbstractUtility end 
 
 # A concrete type of AbstractUtility must define four methods: 
 #   utility, inverse utiliy, the first derivative of u and its inverse. 
 
-# The log utility type
+# Log utility 
 struct LogUtility <: AbstractUtility end 
 
 u(::LogUtility, c) = log(c)
@@ -35,7 +37,7 @@ u_prime(::LogUtility, c) = 1 / c
 inv_u_prime(::LogUtility, x) = 1 / x
 
 
-# The CRRA type 
+# CRRA utility 
 struct CRRAUtility{T<:Real} <: AbstractUtility 
     σ::T 
 end 
@@ -49,13 +51,13 @@ u_prime(uf::CRRAUtility, c) = c^(- uf.σ)
 inv_u_prime(uf::CRRAUtility, x) = x^(- 1 / uf.σ) 
 
 
-# Model structs 
-abstract type AbstractLongBondModel{T<:AbstractUtility} end 
+# ----------------  Model struct
 
 # Definining the main model struct that contains the parameters 
 # and performs some basic computations.
-# It takes as an input a concrete instance of AbstractUtility 
-@with_kw struct LongBondModel{T, S<:Real} <: AbstractLongBondModel{T} @deftype S
+# It takes as an input a concrete instance of AbstractUtility.
+# The following sets up some defaults. 
+@with_kw struct LongBondModel{T<:AbstractUtility, S<:Real}  @deftype S
     uf::T = LogUtility()
     r = 0.05
     ρ = r
@@ -79,20 +81,20 @@ end
 LongBondModel(uf, vargs...) = LongBondModel(uf, promote(vargs...)...) 
 
 
-# Model methods 
+# ------------------ Model Methods 
 
-u(m::AbstractLongBondModel, c) = u(m.uf, c)
+u(m::LongBondModel, c) = u(m.uf, c)
 
-c_foc(m::AbstractLongBondModel, p, q) = inv_u_prime(m.uf, - p / q) 
+c_foc(m::LongBondModel, p, q) = inv_u_prime(m.uf, - p / q) 
 
-cₛₛ(m::AbstractLongBondModel, q, b) = m.y - (m.r + m.δ * (1 - q)) * b
+cₛₛ(m::LongBondModel, q, b) = m.y - (m.r + m.δ * (1 - q)) * b
 
-pₛₛ(m::AbstractLongBondModel, q, b) = - u_prime(m.uf, cₛₛ(m, q, b)) * q
+pₛₛ(m::LongBondModel, q, b) = - u_prime(m.uf, cₛₛ(m, q, b)) * q
 
-b_dot(m::AbstractLongBondModel, c, q, b) = (c + (m.r + m.δ) * b - m.y) / q - m.δ * b
+b_dot(m::LongBondModel, c, q, b) = (c + (m.r + m.δ) * b - m.y) / q - m.δ * b
 
 
-function u_stationary(m::AbstractLongBondModel, q, b) 
+function u_stationary(m::LongBondModel, q, b) 
     if b < m.b̲
         return u(m, cₛₛ(m, q, b)) / m.r
     else
@@ -101,12 +103,12 @@ function u_stationary(m::AbstractLongBondModel, q, b)
 end
 
 
-function hjb(m::AbstractLongBondModel, v, c, p, q, b)
+function hjb(m::LongBondModel, v, c, p, q, b)
     return u(m, c) + p * b_dot(m, c, q, b) + m.λ * m.v̅ - (m.ρ + m.λ) * v
 end
 
 
-function v_prime(m::AbstractLongBondModel, v, q, b)
+function v_prime(m::LongBondModel, v, q, b)
     pss = pₛₛ(m, q, b)
     cero = zero(v)
     if hjb(m, v, c_foc(m, pss, q), pss, q, b) >= cero 
@@ -120,21 +122,21 @@ function v_prime(m::AbstractLongBondModel, v, q, b)
 end
 
 
-function q_prime(m::AbstractLongBondModel, p, q, b) 
+function q_prime(m::LongBondModel, p, q, b) 
     return (
         ((m.r + m.δ + m.λ) * q - (m.r + m.δ)) / b_dot(m, c_foc(m, p, q), q, b)
     )
 end
 
 
-function ode_system!(duu, uu, m::AbstractLongBondModel, t)
+function ode_system!(duu, uu, m::LongBondModel, t)
     duu[1] = v_prime(m, uu[1], uu[2], t)
     duu[2] = q_prime(m, duu[1], uu[2], t)
 end
 
 
 function solve_equilibrium(
-    m::AbstractLongBondModel; 
+    m::LongBondModel; 
     extra_grid_pts=20,
     bv_tol=10.0^(-6),
     stop_tol=10.0^(-9),
@@ -164,7 +166,7 @@ function solve_equilibrium(
 end
 
 
-function collect_solution(m::AbstractLongBondModel, out; extra_grid_pts=20)
+function collect_solution(m::LongBondModel, out; extra_grid_pts=20)
     # Creating the solution 
 
     bbar_i = findlast(
@@ -225,7 +227,7 @@ function collect_solution(m::AbstractLongBondModel, out; extra_grid_pts=20)
 end
 
 
-function solve_efficient(m::AbstractLongBondModel; 
+function solve_efficient(m::LongBondModel; 
     extra_grid_pts=20, 
     bI_tol=10^(-10),
     ode_tol=()    
@@ -321,7 +323,7 @@ function solve_efficient(m::AbstractLongBondModel;
 end
 
 
-# Plotting functions 
+# -------------------  Plotting methods 
 
 function plot_c(sol)
     f = plot(sol.b, sol.css, line=(1, :dash,), color=2,
